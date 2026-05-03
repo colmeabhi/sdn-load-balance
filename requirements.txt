@@ -1,0 +1,17 @@
+# RYU controller and its dependencies (pinned for Python 3.8 compatibility)
+ryu==4.34
+eventlet==0.30.2        # 0.31+ removed ALREADY_HANDLED from eventlet.wsgi
+msgpack==1.0.0          # RYU 4.34 uses the pre-1.1 msgpack API
+webob==1.8.7
+netaddr==0.8.0
+six==1.16.0
+routes==2.5.1
+oslo.config==8.8.0
+oslo.i18n==5.1.0
+tinyrpc==0.9.4
+ovs==2.10.0
+setuptools==58.2.0      # 67+ removed easy_install.get_script_args used by RYU hooks
+
+# Benchmarking
+locust==2.25.0
+gevent==22.10.2         # pre-built aarch64 wheel; avoids libev-dev build requirement
