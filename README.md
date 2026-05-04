@@ -12,10 +12,12 @@ Clients send HTTP requests to a single Virtual IP (`10.0.0.100`). An SDN control
 sdn-load-balance/
 ├── topology.py            # Mininet network: 3 clients + 4 servers + 1 OVS switch
 ├── load_balancer.py       # RYU controller app — change ALGORITHM here
+├── run_benchmarks.sh      # Automated sweep: all 5 algorithms × 5 user counts
+├── plot_results.py        # Generates 7 comparison graphs from benchmark CSVs
+├── analysis.py            # Prints comparison table from benchmark CSVs
 ├── benchmark/
 │   └── locustfile.py      # Locust HTTP load test targeting the VIP
-├── analysis.py            # Parses Locust CSV output, prints comparison table
-├── results/               # Benchmark CSVs land here (git-ignored)
+├── results/               # Benchmark CSVs and graphs land here (git-ignored)
 ├── requirements.txt       # Pinned Python deps for the ryu-env
 └── PROJECT.md             # Full theory, code walkthrough, and packet traces
 ```
@@ -49,15 +51,28 @@ Restart `ryu-manager` to apply.
 
 ## Running benchmarks
 
-From inside the Mininet CLI:
+**Automated sweep** (all 5 algorithms × 5 user counts = 25 runs, from a separate terminal while Mininet is running):
+```bash
+bash run_benchmarks.sh
+```
+
+**Generate graphs** after the sweep:
+```bash
+~/ryu-env/bin/python plot_results.py
+# graphs saved to results/
+```
+
+Generates 7 plots: throughput, avg/p95/p99 latency, failure rate heatmap, latency distribution bar chart, and a normalised radar chart.
+
+**Manual single run** (from inside the Mininet CLI):
 ```
 mininet> h1 ~/ryu-env/bin/locust -f benchmark/locustfile.py \
     --headless -u 100 -r 10 -t 60s --csv=results/rr_100
 ```
 
-Compare results across runs:
+**Compare results as a table:**
 ```bash
-python3 analysis.py results/
+~/ryu-env/bin/python analysis.py results/
 ```
 
 ## Deep dive
