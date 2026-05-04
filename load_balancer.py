@@ -28,7 +28,7 @@ import hashlib
 
 # ─── Algorithm Selection ─────────────────────────────────────────────────────
 # Options: round_robin | random | ip_hash | least_connections | weighted
-ALGORITHM = "round_robin"
+ALGORITHM = "weighted"
 
 # ─── Virtual IP ──────────────────────────────────────────────────────────────
 VIRTUAL_IP  = "10.0.0.100"
@@ -126,11 +126,23 @@ class LoadBalancer(app_manager.RyuApp):
         datapath = ev.msg.datapath
         ofproto  = datapath.ofproto
         parser   = datapath.ofproto_parser
+
+        # Wipe stale flows from prior sessions so MAC/port learning starts clean.
+        # Old L2 rules would intercept ARP replies before the controller sees them,
+        # preventing ip_to_mac and mac_to_port from being populated.
+        datapath.send_msg(parser.OFPFlowMod(
+            datapath=datapath,
+            command=ofproto.OFPFC_DELETE,
+            out_port=ofproto.OFPP_ANY,
+            out_group=ofproto.OFPG_ANY,
+            match=parser.OFPMatch(),
+        ))
+
         match   = parser.OFPMatch()
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
                                           ofproto.OFPCML_NO_BUFFER)]
         self.add_flow(datapath, 0, match, actions)
-        self.logger.info("Switch %s connected — table-miss installed", datapath.id)
+        self.logger.info("Switch %s connected — flows cleared, table-miss installed", datapath.id)
 
     # ── Main packet handler ───────────────────────────────────────────────────
 
@@ -168,8 +180,14 @@ class LoadBalancer(app_manager.RyuApp):
                 return
             # All other ARP falls through to standard L2 forwarding below
 
-        # ── IPv4 destined for VIP → load balance ─────────────────────────────
+        # ── IPv4: learn IP→MAC, then check for VIP ───────────────────────────
         ip_pkt = pkt.get_protocol(ipv4.ipv4)
+        if ip_pkt:
+            # Populate ip_to_mac from every IP packet, not just ARP.
+            # This ensures warmup ICMP replies from backends (which arrive before
+            # any L2 flow is installed) still teach the controller their MACs.
+            self.ip_to_mac[ip_pkt.src] = src
+
         if ip_pkt and ip_pkt.dst == VIRTUAL_IP:
             self._handle_vip(datapath, in_port, eth, ip_pkt, msg)
             return
@@ -244,16 +262,11 @@ class LoadBalancer(app_manager.RyuApp):
         server_port = self.mac_to_port[dpid].get(server_mac)
 
         if not server_mac or not server_port:
-            # Server not seen on the network yet — flood and wait for ARP
-            self.logger.debug("Server %s MAC unknown, flooding", server_ip)
-            out = parser.OFPPacketOut(
-                datapath=datapath,
-                buffer_id=msg.buffer_id,
-                in_port=in_port,
-                actions=[parser.OFPActionOutput(ofproto.OFPP_FLOOD)],
-                data=msg.data if msg.buffer_id == ofproto.OFP_NO_BUFFER else None,
-            )
-            datapath.send_msg(out)
+            # Server MAC not yet learned — emit ARP probe and drop this packet.
+            # The TCP client will retransmit the SYN; by then the ARP reply will
+            # have arrived and the controller will know the server's port.
+            self.logger.debug("Server %s MAC unknown — sending ARP probe", server_ip)
+            self._arp_probe(datapath, server_ip, client_ip, client_mac, in_port)
             return
 
         # ── Forward flow: client→VIP  →  client→server ───────────────────────
@@ -294,5 +307,32 @@ class LoadBalancer(app_manager.RyuApp):
             in_port=in_port,
             actions=actions_fwd,
             data=data,
+        )
+        datapath.send_msg(out)
+
+    # ── ARP probe ─────────────────────────────────────────────────────────────
+
+    def _arp_probe(self, datapath, target_ip, src_ip, src_mac, out_port):
+        """Broadcast an ARP-who-has for target_ip to learn its MAC and port."""
+        ofproto = datapath.ofproto
+        parser  = datapath.ofproto_parser
+        probe   = packet.Packet()
+        probe.add_protocol(ethernet.ethernet(
+            ethertype=0x0806,
+            dst="ff:ff:ff:ff:ff:ff",
+            src=src_mac,
+        ))
+        probe.add_protocol(arp.arp(
+            opcode=arp.ARP_REQUEST,
+            src_mac=src_mac, src_ip=src_ip,
+            dst_mac="00:00:00:00:00:00", dst_ip=target_ip,
+        ))
+        probe.serialize()
+        out = parser.OFPPacketOut(
+            datapath=datapath,
+            buffer_id=ofproto.OFP_NO_BUFFER,
+            in_port=ofproto.OFPP_CONTROLLER,
+            actions=[parser.OFPActionOutput(ofproto.OFPP_FLOOD)],
+            data=probe.data,
         )
         datapath.send_msg(out)

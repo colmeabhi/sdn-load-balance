@@ -18,9 +18,11 @@ SPAWN_RATE=20          # users spawned per second
 DURATION=60            # seconds per run
 RESULTS_DIR="$(cd "$(dirname "$0")/results" && pwd)"
 LB_FILE="$(cd "$(dirname "$0")" && pwd)/load_balancer.py"
-LOCUST_BIN="$HOME/ryu-env/bin/locust"
+# Resolve the real user's home even when run via sudo
+REAL_HOME="$(getent passwd "${SUDO_USER:-$USER}" | cut -d: -f6)"
+LOCUST_BIN="$REAL_HOME/ryu-env/bin/locust"
 LOCUSTFILE="$(cd "$(dirname "$0")/benchmark" && pwd)/locustfile.py"
-RYU_BIN="$HOME/ryu-env/bin/ryu-manager"
+RYU_BIN="$REAL_HOME/ryu-env/bin/ryu-manager"
 
 # Parse optional flags
 while [[ $# -gt 0 ]]; do
@@ -64,7 +66,7 @@ set_algorithm() {
 
 # Start ryu-manager in background, return its PID
 start_ryu() {
-    source "$HOME/ryu-env/bin/activate"
+    source "$REAL_HOME/ryu-env/bin/activate"
     "$RYU_BIN" "$LB_FILE" > "/tmp/ryu_$1.log" 2>&1 &
     echo $!
 }
@@ -107,6 +109,14 @@ for algo in $ALGORITHMS; do
 
     wait_for_switch
     sleep 2   # let table-miss rule propagate
+
+    # Warm up: ping each server from h1 so the controller learns MAC/port tables
+    log "Warming up ARP tables (pinging each backend from h1)..."
+    for sip in 10.0.0.4 10.0.0.5 10.0.0.6 10.0.0.7; do
+        sudo nsenter --net="/proc/$H1_PID/ns/net" -- ping -c 2 -W 2 "$sip" > /dev/null 2>&1 || true
+    done
+    sleep 1
+    log "ARP warmup done"
 
     for users in $USER_COUNTS; do
         RUN=$((RUN + 1))
