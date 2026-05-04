@@ -1,0 +1,2 @@
+timestamp,num_users,requests,failures,avg_response_ms,p50_ms,p95_ms,p99_ms,rps
+1777879706,0,8791,0,23.8,1,8,1000.0,153.4
